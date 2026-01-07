@@ -69,14 +69,20 @@ function maybeEnableButtons() {
 // GESTIÓN DE SESIÓN EXTENDIDA (30 DÍAS)
 // ==========================================
 
+// ==========================================
+// GESTIÓN DE SESIÓN EXTENDIDA (30 DÍAS) - CORREGIDO
+// ==========================================
+
+let isRefreshing = false; // Prevenir múltiples intentos de renovación
+
 function saveSession(token) {
     try {
-        // Guardar token y fecha de login
         localStorage.setItem('google_access_token', token.access_token);
         localStorage.setItem('google_token_expiry', token.expires_at || (Date.now() + 3600000));
         localStorage.setItem('session_created', Date.now().toString());
         localStorage.setItem('session_expiry', (Date.now() + SESSION_DURATION).toString());
         localStorage.setItem('remember_session', 'true');
+        localStorage.setItem('user_logged_in', 'true'); // Flag para saber que el usuario completó login
         
         console.log('✅ Sesión guardada (válida por 30 días)');
     } catch (error) {
@@ -87,15 +93,20 @@ function saveSession(token) {
 function restoreSession() {
     try {
         const rememberSession = localStorage.getItem('remember_session');
+        const userLoggedIn = localStorage.getItem('user_logged_in');
         const sessionExpiry = localStorage.getItem('session_expiry');
+        const tokenExpiry = localStorage.getItem('google_token_expiry');
         
-        if (!rememberSession || rememberSession !== 'true') {
-            console.log('❌ No hay sesión guardada');
+        // Si no hay sesión guardada o el usuario nunca completó login
+        if (!rememberSession || !userLoggedIn || userLoggedIn !== 'true') {
+            console.log('❌ No hay sesión guardada o login incompleto');
+            showLoginSection();
             return;
         }
         
         if (!sessionExpiry) {
             console.log('❌ No hay fecha de expiración');
+            showLoginSection();
             return;
         }
         
@@ -106,64 +117,44 @@ function restoreSession() {
         if (expiryTime < now) {
             console.log('⏰ Sesión de 30 días expirada');
             clearSession();
+            showLoginSection();
             return;
         }
         
-        console.log('🔄 Sesión de 30 días válida, restaurando...');
+        const daysRemaining = Math.floor((expiryTime - now) / (1000 * 60 * 60 * 24));
+        console.log(`🔄 Sesión de 30 días válida (${daysRemaining} días restantes)`);
         
-        // Verificar si el token de Google (1 hora) sigue válido
-        const tokenExpiry = localStorage.getItem('google_token_expiry');
-        if (tokenExpiry && parseInt(tokenExpiry) > now) {
+        // Verificar si el token de Google sigue válido
+        if (tokenExpiry && parseInt(tokenExpiry) > now + 300000) { // 5 minutos de margen
             // Token aún válido, restaurar directamente
             const savedToken = localStorage.getItem('google_access_token');
-            gapi.client.setToken({
-                access_token: savedToken,
-                expires_at: parseInt(tokenExpiry)
-            });
-            verifyAndShowSession();
+            if (savedToken) {
+                gapi.client.setToken({
+                    access_token: savedToken,
+                    expires_at: parseInt(tokenExpiry)
+                });
+                verifyAndShowSession(false); // false = no mostrar mensaje de bienvenida en carga inicial
+            } else {
+                showLoginSection();
+            }
         } else {
-            // Token expirado, pero sesión de 30 días válida
-            // Solicitar nuevo token de forma silenciosa
-            console.log('🔄 Token expirado, renovando silenciosamente...');
-            refreshTokenSilently();
+            // Token expirado pero sesión válida - mostrar pantalla de login
+            // No intentar renovar automáticamente para evitar el bucle
+            console.log('⏰ Token expirado. Requiere nueva autenticación.');
+            localStorage.removeItem('google_access_token');
+            localStorage.removeItem('google_token_expiry');
+            showLoginSection();
+            showStatus('Tu sesión expiró. Por favor, inicia sesión nuevamente.', 'info');
         }
         
     } catch (error) {
         console.error('Error restaurando sesión:', error);
         clearSession();
+        showLoginSection();
     }
 }
 
-function refreshTokenSilently() {
-    // Renovar token sin mostrar el popup de consentimiento
-    tokenClient.callback = async (resp) => {
-        if (resp.error !== undefined) {
-            console.error('Error renovando token:', resp);
-            // Si falla la renovación silenciosa, limpiar y pedir login
-            clearSession();
-            showLoginSection();
-            return;
-        }
-        
-        console.log('✅ Token renovado exitosamente');
-        
-        // Actualizar solo el token, mantener la sesión de 30 días
-        const token = gapi.client.getToken();
-        if (!token.expires_at) {
-            token.expires_at = Date.now() + (resp.expires_in * 1000);
-        }
-        
-        localStorage.setItem('google_access_token', token.access_token);
-        localStorage.setItem('google_token_expiry', token.expires_at.toString());
-        
-        verifyAndShowSession();
-    };
-    
-    // Intentar obtener token sin prompt
-    tokenClient.requestAccessToken({prompt: ''});
-}
-
-async function verifyAndShowSession() {
+async function verifyAndShowSession(showWelcome = true) {
     try {
         // Intentar hacer una petición para verificar que el token funciona
         await gapi.client.calendar.calendarList.list({
@@ -177,11 +168,20 @@ async function verifyAndShowSession() {
         showAppSection();
         await loadUpcomingEvents();
         startAutoUpdate();
-        showStatus('👋 ¡Bienvenido de vuelta!', 'success');
+        
+        if (showWelcome) {
+            showStatus('👋 ¡Bienvenido de vuelta!', 'success');
+        }
         
     } catch (error) {
-        console.log('❌ Token inválido, intentando renovar...');
-        refreshTokenSilently();
+        console.log('❌ Token inválido o expirado');
+        // No intentar renovar, simplemente pedir login de nuevo
+        localStorage.removeItem('google_access_token');
+        localStorage.removeItem('google_token_expiry');
+        showLoginSection();
+        if (showWelcome) {
+            showStatus('Tu sesión expiró. Por favor, inicia sesión nuevamente.', 'info');
+        }
     }
 }
 
@@ -191,7 +191,9 @@ function clearSession() {
     localStorage.removeItem('session_created');
     localStorage.removeItem('session_expiry');
     localStorage.removeItem('remember_session');
+    localStorage.removeItem('user_logged_in');
     gapi.client.setToken('');
+    isRefreshing = false;
     console.log('🗑️ Sesión limpiada completamente');
 }
 
@@ -200,13 +202,21 @@ function clearSession() {
 // ==========================================
 
 function handleAuthClick() {
+    // Prevenir múltiples clics
+    if (isRefreshing) {
+        console.log('⏳ Ya hay una autenticación en proceso...');
+        return;
+    }
+    
+    isRefreshing = true;
     console.log('Intentando autenticar...');
     
     tokenClient.callback = async (resp) => {
         if (resp.error !== undefined) {
             console.error('Error en autenticación:', resp);
+            isRefreshing = false;
             showStatus('Error al conectar con Google', 'error');
-            throw (resp);
+            return;
         }
         
         console.log('✅ Autenticación exitosa');
@@ -220,17 +230,16 @@ function handleAuthClick() {
         // Guardar sesión de 30 días
         saveSession(token);
         
+        isRefreshing = false;
+        
         showAppSection();
         await loadUpcomingEvents();
         startAutoUpdate();
         showStatus('¡Conectado exitosamente! Sesión válida por 30 días 🎉', 'success');
     };
 
-    if (gapi.client.getToken() === null) {
-        tokenClient.requestAccessToken({prompt: 'consent'});
-    } else {
-        tokenClient.requestAccessToken({prompt: ''});
-    }
+    // Siempre usar 'consent' para asegurar que el usuario vea la pantalla completa
+    tokenClient.requestAccessToken({prompt: 'consent'});
 }
 
 function handleSignoutClick() {
@@ -266,7 +275,6 @@ async function handleFormSubmit(e) {
     const duration = parseInt(document.getElementById('eventDuration').value);
     const description = document.getElementById('eventDescription').value;
 
-    // Crear fechas de inicio y fin
     const startDateTime = new Date(`${date}T${time}`);
     const endDateTime = new Date(startDateTime.getTime() + duration * 60000);
 
@@ -293,25 +301,24 @@ async function handleFormSubmit(e) {
         console.log('Evento creado:', response);
         showStatus('✓ Evento agregado al calendario', 'success');
         
-        // Limpiar formulario
         document.getElementById('eventForm').reset();
         
-        // Resetear fecha y hora actuales
         const now = new Date();
         document.getElementById('eventDate').valueAsDate = now;
         document.getElementById('eventTime').value = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
         
-        // Recargar lista de eventos
         await loadUpcomingEvents();
 
     } catch (error) {
         console.error('Error al crear evento:', error);
         
-        // Si el error es por token expirado, renovar automáticamente
+        // Si el error es por token expirado, pedir login de nuevo
         if (error.status === 401) {
-            console.log('🔄 Token expirado, renovando...');
-            refreshTokenSilently();
-            showStatus('Renovando sesión...', 'info');
+            console.log('❌ Token expirado, requiere nuevo login');
+            localStorage.removeItem('google_access_token');
+            localStorage.removeItem('google_token_expiry');
+            showLoginSection();
+            showStatus('Tu sesión expiró. Por favor, inicia sesión nuevamente.', 'error');
         } else {
             showStatus('Error al agregar el evento', 'error');
         }
@@ -337,10 +344,13 @@ async function loadUpcomingEvents() {
     } catch (error) {
         console.error('Error al cargar eventos:', error);
         
-        // Si el error es por token expirado, renovar automáticamente
+        // Si el error es por token expirado, pedir login de nuevo
         if (error.status === 401) {
-            console.log('🔄 Token expirado, renovando...');
-            refreshTokenSilently();
+            console.log('❌ Token expirado, requiere nuevo login');
+            localStorage.removeItem('google_access_token');
+            localStorage.removeItem('google_token_expiry');
+            showLoginSection();
+            showStatus('Tu sesión expiró. Por favor, inicia sesión nuevamente.', 'error');
         } else {
             document.getElementById('eventsList').innerHTML = '<p class="loading">Error al cargar eventos</p>';
         }
