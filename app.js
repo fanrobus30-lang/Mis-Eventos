@@ -344,3 +344,70 @@ document.addEventListener('DOMContentLoaded', () => {
     if (logoutBtn) logoutBtn.addEventListener('click', handleSignoutClick);
     if (eventForm) eventForm.addEventListener('submit', handleFormSubmit);
 });
+
+// Detectar si la app es instalable
+let deferredPrompt;
+
+window.addEventListener('beforeinstallprompt', (e) => {
+    // Prevenir que Chrome muestre su propio banner
+    e.preventDefault();
+    // Guardar el evento para usarlo después
+    deferredPrompt = e;
+    
+    // Mostrar un banner personalizado (opcional)
+    showInstallBanner();
+});
+
+function showInstallBanner() {
+    // Crear banner de instalación
+    const banner = document.createElement('div');
+    banner.id = 'installBanner';
+    banner.innerHTML = `
+        <div style="position: fixed; bottom: 20px; left: 20px; right: 20px; 
+                    background: white; padding: 15px; border-radius: 10px; 
+                    box-shadow: 0 4px 6px rgba(0,0,0,0.1); z-index: 1000;
+                    display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <strong>📱 Instalar Mis Eventos</strong>
+                <p style="margin: 5px 0 0 0; font-size: 14px; color: #666;">
+                    Accede rápidamente desde tu pantalla de inicio
+                </p>
+            </div>
+            <button onclick="installApp()" style="background: #4285f4; color: white; 
+                    border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">
+                Instalar
+            </button>
+            <button onclick="dismissInstallBanner()" style="background: transparent; 
+                    border: none; font-size: 20px; cursor: pointer; margin-left: 10px;">
+                ×
+            </button>
+        </div>
+    `;
+    document.body.appendChild(banner);
+}
+
+function installApp() {
+    const banner = document.getElementById('installBanner');
+    if (banner) banner.remove();
+    
+    if (deferredPrompt) {
+        deferredPrompt.prompt();
+        deferredPrompt.userChoice.then((choiceResult) => {
+            if (choiceResult.outcome === 'accepted') {
+                console.log('Usuario aceptó la instalación');
+            }
+            deferredPrompt = null;
+        });
+    }
+}
+
+function dismissInstallBanner() {
+    const banner = document.getElementById('installBanner');
+    if (banner) banner.remove();
+}
+
+// Detectar cuando la app ya está instalada
+window.addEventListener('appinstalled', () => {
+    console.log('¡Aplicación instalada exitosamente!');
+    deferredPrompt = null;
+});
